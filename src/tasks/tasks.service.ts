@@ -1,31 +1,55 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import path from 'path';
-import * as fs from 'fs';
+import { promises as fs } from 'fs';
 import { v4 as uuid } from 'uuid';
-import { Task } from './interfaces/task.inferface';
+import { Task } from './interfaces/task.interface';
 import { FindTasksDto } from './dto/find-task.dto';
 import { CreateTaskDto } from './dto/create-task.dto';
 import { UpdateTaskDto } from './dto/update-task.dto';
+import { TaskStatus } from './enums/task-status.enum';
 
 @Injectable()
 export class TasksService {
+  private readonly logger = new Logger(TasksService.name);
+
   private filePath = path.join(process.cwd(), 'src', 'data', 'tasks.json');
 
-  private readFile(): Task[] {
-    const data = fs.readFileSync(this.filePath, 'utf-8');
-    return JSON.parse(data) as Task[];
-  }
-
-  private writeFile(tasks: Task[]): void {
-    fs.writeFileSync(this.filePath, JSON.stringify(tasks, null, 2), 'utf-8');
-  }
-
-  findAll(filters?: FindTasksDto): Task[] {
-    const tasks = this.readFile();
-
-    if (!filters) {
-      return tasks;
+  private async readFile(): Promise<Task[]> {
+    try {
+      const data = await fs.readFile(this.filePath, 'utf-8');
+      return JSON.parse(data) as Task[];
+    } catch (err) {
+      this.logger.error('Failed to read tasks file', (err as Error).stack);
+      throw new InternalServerErrorException('Failed to read tasks');
     }
+  }
+
+  private async writeFile(tasks: Task[]): Promise<void> {
+    try {
+      await fs.writeFile(
+        this.filePath,
+        JSON.stringify(tasks, null, 2),
+        'utf-8',
+      );
+    } catch (err) {
+      this.logger.error('Failed to write tasks file', (err as Error).stack);
+      throw new InternalServerErrorException('Failed to write tasks');
+    }
+  }
+
+  async findAll(filters?: FindTasksDto): Promise<Task[]> {
+    const tasks = await this.readFile();
+
+    this.logger.log(
+      `Retrieved all tasks${filters ? ` with filters: ${JSON.stringify(filters)}` : ''}`,
+    );
+
+    if (!filters) return tasks;
 
     return tasks.filter(
       (task) =>
@@ -39,40 +63,44 @@ export class TasksService {
     );
   }
 
-  findById(id: string): Task {
-    const tasks = this.readFile();
+  async findById(id: string): Promise<Task> {
+    const tasks = await this.readFile();
     const task = tasks.find((task) => task.id === id);
 
     if (!task) {
+      this.logger.warn(`Task with id ${id} not found`);
       throw new NotFoundException(`Task with id ${id} not found`);
     }
 
+    this.logger.log(`Retrieved task with id ${id}`);
     return task;
   }
 
-  createTask(task: CreateTaskDto): Task {
-    const tasks = this.readFile();
+  async createTask(task: CreateTaskDto): Promise<Task> {
+    const tasks = await this.readFile();
 
     const newTask: Task = {
       id: uuid(),
       title: task.title,
       description: task.description,
-      status: task.status || 'PENDING',
+      status: task.status || TaskStatus.PENDING,
       createdAt: new Date().toISOString(),
     };
 
     tasks.push(newTask);
-    this.writeFile(tasks);
+    await this.writeFile(tasks);
 
+    this.logger.log(`Task created: ${newTask.title}`);
     return newTask;
   }
 
-  updateTask(id: string, updateTaskDto: UpdateTaskDto): Task {
-    const tasks = this.readFile();
+  async updateTask(id: string, updateTaskDto: UpdateTaskDto): Promise<Task> {
+    const tasks = await this.readFile();
 
     const taskIndex = tasks.findIndex((task) => task.id === id);
 
     if (taskIndex === -1) {
+      this.logger.warn(`Task with id ${id} not found`);
       throw new NotFoundException(`Task with id ${id} not found`);
     }
 
@@ -82,21 +110,25 @@ export class TasksService {
     };
 
     tasks[taskIndex] = updatedTask;
-    this.writeFile(tasks);
+    await this.writeFile(tasks);
 
+    this.logger.log(`Task with id ${id} updated`);
     return updatedTask;
   }
 
-  deleteTask(id: string): void {
-    const tasks = this.readFile();
-
+  async deleteTask(id: string): Promise<Task> {
+    const tasks = await this.readFile();
     const taskIndex = tasks.findIndex((task) => task.id === id);
 
     if (taskIndex === -1) {
+      this.logger.warn(`Task with id ${id} not found`);
       throw new NotFoundException(`Task with id ${id} not found`);
     }
 
-    tasks.splice(taskIndex, 1);
-    this.writeFile(tasks);
+    const deletedTask = tasks.splice(taskIndex, 1)[0];
+    await this.writeFile(tasks);
+
+    this.logger.log(`Task with id ${id} deleted`);
+    return deletedTask;
   }
 }
